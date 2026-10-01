@@ -93,6 +93,7 @@ def run_lazy(
         len(term_counts),
         t_elapsed,
         peak_bytes / (1024 * 1024),
+        term_counts,
     )
 
 
@@ -103,13 +104,23 @@ def main() -> None:
     e_docs, _, _, e_time, e_mem = run_eager(args.root, args.limit)
 
     print("Запуск lazy версії...")
-    l_docs, _, _, l_time, l_mem = run_lazy(args.root, args.limit)
+    l_docs, l_tokens, l_vocab, l_time, l_mem, term_counts = run_lazy(args.root, args.limit)
 
     print("\n| Version          | Documents | Peak memory | Elapsed   |")
     print("|------------------|-----------|-------------|-----------|")
     print(f"| eager (lists)    | {e_docs:<9} | {e_mem:.2f} MB     | {e_time:.4f} s  |")
     print(f"| lazy (generators)| {l_docs:<9} | {l_mem:.2f} MB     | {l_time:.4f} s  |")
+    
+    print("\n--- Детальна статистика (Lazy) ---")
+    print(f"Оброблено документів: {l_docs}")
+    print(f"Загальна кількість токенів: {l_tokens}")
+    print(f"Розмір словника (унікальні слова): {l_vocab}")
+    
+    print("\nТоп-10 найчастіших слів:")
+    for word, count in term_counts.most_common(10):
+        print(f"  • {word}: {count}")
 
 
 if __name__ == "__main__":
     main()
+
