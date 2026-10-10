@@ -1,126 +1,86 @@
 import argparse
-import itertools
+from collections import Counter
+from itertools import islice
+from pathlib import Path
 import time
 import tracemalloc
-from collections import Counter
-from pathlib import Path
 
 from findex.corpus import iter_documents
 from findex.tokenize import tokenize
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Compute corpus and token statistics in constant memory."
-    )
-    parser.add_argument(
-        "root",
-        type=Path,
-        help="Шлях до папки з текстовими файлами",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Максимальна кількість документів для читання",
-    )
-    return parser.parse_args()
-
-
-def run_eager(
-    root: Path, limit: int | None = None
-) -> tuple[int, int, int, float, float]:
+def run_eager(folder_path: Path, limit: int | None = None):
     tracemalloc.start()
-    t_start = time.perf_counter()
+    start_time = time.perf_counter()
 
-    all_files = list(root.rglob("*.txt"))
+    all_files = list(folder_path.rglob("*.txt"))
     if limit is not None:
         all_files = all_files[:limit]
 
-    documents = []
-    for doc_id, file_path in enumerate(all_files):
-        with open(file_path, encoding="utf-8", errors="replace") as f:
-            documents.append((doc_id, str(file_path), f.read()))
+    all_texts = [
+        f.read_text(encoding="utf-8", errors="replace") for f in all_files
+    ]
+    all_tokens = [list(tokenize(text)) for text in all_texts]
 
-    all_tokens = []
-    for _, _, text in documents:
-        all_tokens.append(list(tokenize(text)))
+    doc_count = len(all_texts)
+    stats_eager = Counter()
+    for tokens in all_tokens:
+        stats_eager.update(tokens)
 
-    doc_count = len(documents)
-    total_tokens = sum(len(toks) for toks in all_tokens)
-    term_counts = Counter(token for toks in all_tokens for token in toks)
-
-    t_elapsed = time.perf_counter() - t_start
-    _, peak_bytes = tracemalloc.get_traced_memory()
+    elapsed_time = time.perf_counter() - start_time
+    _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
+    peak_mb = peak / (1024 * 1024)
 
-    return (
-        doc_count,
-        total_tokens,
-        len(term_counts),
-        t_elapsed,
-        peak_bytes / (1024 * 1024),
-    )
+    return doc_count, stats_eager, elapsed_time, peak_mb
 
 
-def run_lazy(
-    root: Path, limit: int | None = None
-) -> tuple[int, int, int, float, float]:
+def run_lazy(folder_path: Path, limit: int | None = None):
     tracemalloc.start()
-    t_start = time.perf_counter()
+    start_time = time.perf_counter()
 
-    docs_stream = iter_documents(root)
+    docs_stream = iter_documents(folder_path)
     if limit is not None:
-        docs_stream = itertools.islice(docs_stream, limit)
+        docs_stream = islice(docs_stream, limit)
 
     doc_count = 0
-    total_tokens = 0
-    term_counts = Counter()
-
+    stats = Counter()
     for doc in docs_stream:
         doc_count += 1
-        for token in tokenize(doc.text):
-            total_tokens += 1
-            term_counts[token] += 1
+        stats.update(tokenize(doc.text))
 
-    t_elapsed = time.perf_counter() - t_start
-    _, peak_bytes = tracemalloc.get_traced_memory()
+    elapsed_time = time.perf_counter() - start_time
+    _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
+    peak_mb = peak / (1024 * 1024)
 
-    return (
-        doc_count,
-        total_tokens,
-        len(term_counts),
-        t_elapsed,
-        peak_bytes / (1024 * 1024),
-        term_counts,
-    )
+    return doc_count, stats, elapsed_time, peak_mb
 
 
-def main() -> None:
-    args = parse_args()
+def main():
+    parser = argparse.ArgumentParser(description="Аналіз статистики слів у файлах")
+    parser.add_argument("folder", type=Path, help="Шлях до папки з файлами")
+    parser.add_argument("--limit", type=int, default=None, help="Ліміт кількості документів")
+    args = parser.parse_args()
 
-    print("Запуск eager версії...")
-    e_docs, _, _, e_time, e_mem = run_eager(args.root, args.limit)
+    e_docs, e_stats, e_time, e_mem = run_eager(args.folder, args.limit)
+    l_docs, l_stats, l_time, l_mem = run_lazy(args.folder, args.limit)
 
-    print("Запуск lazy версії...")
-    l_docs, l_tokens, l_vocab, l_time, l_mem, term_counts = run_lazy(args.root, args.limit)
+    print("\n| Version            | Documents | Peak memory | Elapsed   |")
+    print("|--------------------|-----------|-------------|-----------|")
+    print(f"| eager (lists)      | {e_docs:<9} | {e_mem:.2f} MB     | {e_time:.4f} s |")
+    print(f"| lazy (generators)  | {l_docs:<9} | {l_mem:.2f} MB     | {l_time:.4f} s |")
 
-    print("\n| Version          | Documents | Peak memory | Elapsed   |")
-    print("|------------------|-----------|-------------|-----------|")
-    print(f"| eager (lists)    | {e_docs:<9} | {e_mem:.2f} MB     | {e_time:.4f} s  |")
-    print(f"| lazy (generators)| {l_docs:<9} | {l_mem:.2f} MB     | {l_time:.4f} s  |")
-    
-    print("\n--- Детальна статистика (Lazy) ---")
-    print(f"Оброблено документів: {l_docs}")
-    print(f"Загальна кількість токенів: {l_tokens}")
-    print(f"Розмір словника (унікальні слова): {l_vocab}")
-    
-    print("\nТоп-10 найчастіших слів:")
-    for word, count in term_counts.most_common(10):
+    total_tokens = sum(l_stats.values())
+    unique_words = len(l_stats)
+
+    print("\nТоп-50 найчастіших слів:")
+    for word, count in l_stats.most_common(50):
         print(f"  • {word}: {count}")
+
+    print(f"\nУнікальних слів: {unique_words}")
+    print(f"Сума всіх токенів: {total_tokens}")
 
 
 if __name__ == "__main__":
     main()
-

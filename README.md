@@ -1,28 +1,26 @@
-# findex (Lab 01)
+# Findex — Inverted Index Search Engine (Lab 02)
 
-Streaming document corpus loader, tokenizer, and vocabulary stats collector.
+Повнотекстовий пошуковий рушій на Python із підтримкою булевого пошуку, оптимізованим зберіганням та бенчмарками.
 
-## Corpus
+## 🛠 Що зроблено в Lab 02:
+1. **Лінивий пайплайн та побудова:** Однопрохідний інвертований індекс з використанням `defaultdict` та `Counter`.
+2. **Оптимізація структур даних:** Класи `Posting` та `DocMeta` реалізовані з `@dataclass(frozen=True, slots=True)` для зменшення накладних витрат на пам'ять (`__dict__`).
+3. **Булевий пошук:** Підтримка операторів `AND`, `OR`, `NOT` із двома варіантами виконання на вибір через прапорець `--engine`:
+   - `merge` (двовказівниковий обхід відсортованих списків постінгів).
+   - `set` (через множини Python).
+4. **Персистентність:** Збереження та завантаження індексу у двох форматах — бінарному **Pickle** та текстовому **JSON**.
+5. **Профілювання пам'яті та швидкодії:** Інтегровано `tracemalloc` та замір часу для CLI-команд.
 
-The corpus consists of local game configuration and shader logs located in `data/`.
-This folder is excluded from version control via `.gitignore`.
+---
 
-## Tokenization Policy
+## 📊 Бенчмарки та споживання пам'яті
 
-- **Normalization**: Unicode NFC normalization via `unicodedata.normalize("NFC", text)` to ensure composed and decomposed characters match consistently.
-- **Casing**: Case folding via `str.casefold()` for caseless matching.
-- **Apostrophes & Hyphens**: Stripped / treated as token delimiters by default (tokens are matched using `\w+`).
-- **Digits**: Preserved as part of alphanumeric tokens.
+### 1. Порівняння форматів зберігання (на корпусі з 11 документів)
+| Формат | Розмір файлу | Час збереження (save) | Час завантаження (load) |
+| :--- | :--- | :--- | :--- |
+| **Pickle (`.bin`)** | ~1705 KB | 0.18 с | 0.18 с |
+| **JSON (`.json`)** | ~ порівнянно | вищий | вищий |
 
-## Eager vs. Lazy Benchmark
-
-| Version          | Documents | Peak memory | Elapsed   |
-|------------------|-----------|-------------|-----------|
-| eager (lists)    | 7         | 2.23 MB     | 0.1506 s  |
-| lazy (generators)| 7         | 0.55 MB     | 0.1282 s  |
-
-### Memory & Performance Analysis
-
-The eager implementation loads all documents from the filesystem simultaneously into a Python list of strings, and then materializes all extracted tokens into an intermediate list of lists before passing them to `collections.Counter`. This duplicates the raw text and keeps all token objects alive in RAM simultaneously, causing a high memory peak (2.23 MB). 
-
-In contrast, the lazy pipeline uses Python generators (`yield`). It opens and holds only one document in memory at any given time, tokenizing it as a stream. Each token is consumed and recorded in `Counter` immediately, allowing previous document strings and transient token instances to be freed by the garbage collector. As a result, the peak memory (0.55 MB) reflects only the vocabulary dictionary and a single active buffer.
+### 2. Споживання пам'яті під час побудови (`tracemalloc`)
+* **Пікове споживання пам'яті:** ~114.93 MB (через велику кількість унікальних термінів — 48,073).
+* **Пікове споживання при завантаженні та пошуку:** ~23.02 MB.

@@ -16,8 +16,3 @@ def iter_documents(root: Path) -> Iterator[Document]:
             text = f.read()
             yield Document(doc_id=current_id, path=str(file_path), text=text)
             current_id += 1
-
-
-if __name__ == "__main__":
-    docs_stream = iter_documents(Path("data"))
-    print(next(docs_stream))
