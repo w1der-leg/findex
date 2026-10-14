@@ -79,6 +79,15 @@ def difference(posting_a, posting_b):
          i += 1
     return result
 
+
+
+def intersect_sets(posting_a, posting_b):
+    set_a = {p.doc_id for p in posting_a}
+    set_b = {p.doc_id for p in posting_b}
+    inter = set_a & set_b
+    return sorted(inter)
+
+
 def search_and(index: InvertedIndex, query: str, engine: str = "merge") -> list[int]:
 
   if engine not in ("merge", "set"):
@@ -109,14 +118,6 @@ def search_and(index: InvertedIndex, query: str, engine: str = "merge") -> list[
       current_postings = [Posting(doc_id=d_id, tf=0) for d_id in result_ids]
 
   return  result_ids
-
-
-
-def intersect_sets(posting_a, posting_b):
-    set_a = {p.doc_id for p in posting_a}
-    set_b = {p.doc_id for p in posting_b}
-    inter = set_a & set_b
-    return sorted(inter)
 
 
 def boolean_search(index: InvertedIndex, query: str, engine: str = "merge") -> list[int]:

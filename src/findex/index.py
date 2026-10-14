@@ -64,5 +64,5 @@ if __name__ == "__main__":
     tracemalloc.stop()
     
     print(f"Готово! Індекс збережено у {output_path} (документів: {len(index.doc_meta)})")
-    print(f"⏱ Час виконання: {elapsed_time:.4f} сек.")
-    print(f"💾 Пік пам'яті:   {peak / 1024 / 1024:.2f} MB")
+    print(f" Час виконання: {elapsed_time:.4f} сек.")
+    print(f" Пік пам'яті:   {peak / 1024 / 1024:.2f} MB")
