@@ -1,15 +1,20 @@
 import argparse
+import logging
+import time
+import tracemalloc
 from collections import Counter
 from itertools import islice
 from pathlib import Path
-import time
-import tracemalloc
 
 from findex.corpus import iter_documents
 from findex.tokenize import tokenize
 
+log = logging.getLogger(__name__)
 
-def run_eager(folder_path: Path, limit: int | None = None):
+
+def run_eager(
+    folder_path: Path, limit: int | None = None
+) -> tuple[int, Counter[str], float, float]:
     tracemalloc.start()
     start_time = time.perf_counter()
 
@@ -17,13 +22,11 @@ def run_eager(folder_path: Path, limit: int | None = None):
     if limit is not None:
         all_files = all_files[:limit]
 
-    all_texts = [
-        f.read_text(encoding="utf-8", errors="replace") for f in all_files
-    ]
+    all_texts = [f.read_text(encoding="utf-8", errors="replace") for f in all_files]
     all_tokens = [list(tokenize(text)) for text in all_texts]
 
     doc_count = len(all_texts)
-    stats_eager = Counter()
+    stats_eager: Counter[str] = Counter()
     for tokens in all_tokens:
         stats_eager.update(tokens)
 
@@ -35,7 +38,9 @@ def run_eager(folder_path: Path, limit: int | None = None):
     return doc_count, stats_eager, elapsed_time, peak_mb
 
 
-def run_lazy(folder_path: Path, limit: int | None = None):
+def run_lazy(
+    folder_path: Path, limit: int | None = None
+) -> tuple[int, Counter[str], float, float]:
     tracemalloc.start()
     start_time = time.perf_counter()
 
@@ -44,7 +49,7 @@ def run_lazy(folder_path: Path, limit: int | None = None):
         docs_stream = islice(docs_stream, limit)
 
     doc_count = 0
-    stats = Counter()
+    stats: Counter[str] = Counter()
     for doc in docs_stream:
         doc_count += 1
         stats.update(tokenize(doc.text))
@@ -57,13 +62,15 @@ def run_lazy(folder_path: Path, limit: int | None = None):
     return doc_count, stats, elapsed_time, peak_mb
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Аналіз статистики слів у файлах")
     parser.add_argument("folder", type=Path, help="Шлях до папки з файлами")
-    parser.add_argument("--limit", type=int, default=None, help="Ліміт кількості документів")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Ліміт кількості документів"
+    )
     args = parser.parse_args()
 
-    e_docs, e_stats, e_time, e_mem = run_eager(args.folder, args.limit)
+    e_docs, _, e_time, e_mem = run_eager(args.folder, args.limit)
     l_docs, l_stats, l_time, l_mem = run_lazy(args.folder, args.limit)
 
     print("\n| Version            | Documents | Peak memory | Elapsed   |")

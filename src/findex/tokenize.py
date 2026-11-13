@@ -1,7 +1,6 @@
-
-from collections.abc import Iterator
 import re
 import unicodedata
+from collections.abc import Iterator
 
 WORD_PATTERN = re.compile(r"\w+")
 

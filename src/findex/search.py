@@ -1,216 +1,283 @@
+import functools
+import heapq
+import logging
+import math
+import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from collections import defaultdict
-from collections import Counter
 from pathlib import Path
-from findex.corpus import iter_documents, Document
-import argparse
+from typing import Literal, Protocol
+
+from findex.index import Index, InvertedIndex, Posting
+from findex.query import QueryNode, parse_query
 from findex.store import load_index_json, load_index_pickle
-from findex.index import Posting, InvertedIndex, build_index, DocMeta
 from findex.tokenize import tokenize
 
-def intersect(posting_a, posting_b):
+log = logging.getLogger(__name__)
+
+EngineType = Literal["merge", "set"]
+ScorerType = Literal["bm25", "tfidf"]
+
+
+def timed[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            log.debug("%s took %.2f ms", fn.__name__, elapsed_ms)
+
+    return wrapper
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class SearchResult:
+    score: float
+    doc_id: int
+    title: str = ""
+    snippet: str = ""
+
+
+class Scorer(Protocol):
+    def score(self, index: Index, term: str, posting: Posting) -> float: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TfIdf:
+    def score(self, index: Index, term: str, posting: Posting) -> float:
+        df = index.df(term)
+        if df == 0 or index.num_docs == 0:
+            return 0.0
+        idf = math.log((index.num_docs + 1) / (df + 1)) + 1.0
+        return float(posting.tf) * idf
+
+
+@dataclass(frozen=True, slots=True)
+class BM25:
+    k1: float = 1.5
+    b: float = 0.75
+
+    def score(self, index: Index, term: str, posting: Posting) -> float:
+        df = index.df(term)
+        n = index.num_docs
+        if df == 0 or n == 0:
+            return 0.0
+        idf = math.log((n - df + 0.5) / (df + 0.5) + 1.0)
+        doc_len = index.doc_length(posting.doc_id)
+        avg_dl = index.avg_doc_length or 1.0
+        denom = posting.tf + self.k1 * (1.0 - self.b + self.b * (doc_len / avg_dl))
+        return idf * (posting.tf * (self.k1 + 1.0)) / denom
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_parse(query: str) -> QueryNode:
+    log.debug("Cache miss for query parse: %r", query)
+    return parse_query(query)
+
+
+def extract_snippet(text: str, terms: set[str], window: int = 80) -> str:
+    if not text:
+        return ""
+    lower_text = text.casefold()
+    best_pos = -1
+    for term in terms:
+        pos = lower_text.find(term.casefold())
+        if pos != -1 and (best_pos == -1 or pos < best_pos):
+            best_pos = pos
+
+    if best_pos == -1:
+        snippet = text[: window * 2].replace("\n", " ").strip()
+        return snippet
+
+    start = max(0, best_pos - window)
+    end = min(len(text), best_pos + window)
+    snippet = text[start:end].replace("\n", " ").strip()
+
+    for term in sorted(terms, key=len, reverse=True):
+        if term:
+            pattern = re.compile(rf"\b({re.escape(term)})\b", re.IGNORECASE)
+            snippet = pattern.sub(r"[bold yellow]\1[/bold yellow]", snippet)
+
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    return f"{prefix}{snippet}{suffix}"
+
+
+def _build_doc_snippet(index: Index, doc_id: int, terms: set[str]) -> str:
+    meta = index.doc_meta.get(doc_id)
+    if meta is None:
+        return ""
+    path = Path(meta.path)
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return extract_snippet(text, terms)
+
+
+def intersect(posting_a: list[Posting], posting_b: list[Posting]) -> list[int]:
     i = 0
     j = 0
-    result = []
-
-    while i < len(posting_a) and j < len(posting_b):
-        doc_a = posting_a[i].doc_id
-        doc_b = posting_b[j].doc_id
-
-        if  doc_a == doc_b:
-             result.append(doc_a)
-             i += 1
-             j += 1
-        elif doc_a < doc_b:
-            i += 1
-        else:
-            j += 1
-    return result
-
-def union(posting_a, posting_b):
-    i = 0
-    j = 0
-    result = []
+    result: list[int] = []
 
     while i < len(posting_a) and j < len(posting_b):
         doc_a = posting_a[i].doc_id
         doc_b = posting_b[j].doc_id
 
         if doc_a == doc_b:
-            result.append(doc_a) 
+            result.append(doc_a)
             i += 1
             j += 1
         elif doc_a < doc_b:
-            result.append(doc_a) 
-            i += 1 
-            
+            i += 1
         else:
-            result.append(doc_b) 
             j += 1
-            
+    return result
+
+
+def union(posting_a: list[Posting], posting_b: list[Posting]) -> list[int]:
+    i = 0
+    j = 0
+    result: list[int] = []
+
+    while i < len(posting_a) and j < len(posting_b):
+        doc_a = posting_a[i].doc_id
+        doc_b = posting_b[j].doc_id
+
+        if doc_a == doc_b:
+            result.append(doc_a)
+            i += 1
+            j += 1
+        elif doc_a < doc_b:
+            result.append(doc_a)
+            i += 1
+        else:
+            result.append(doc_b)
+            j += 1
+
     while i < len(posting_a):
-      result.append(posting_a[i].doc_id)
-      i += 1
+        result.append(posting_a[i].doc_id)
+        i += 1
 
     while j < len(posting_b):
-      result.append(posting_b[j].doc_id)
-      j += 1
-    
+        result.append(posting_b[j].doc_id)
+        j += 1
+
     return result
 
-def difference(posting_a, posting_b):
+
+def difference(posting_a: list[Posting], posting_b: list[Posting]) -> list[int]:
     i = 0
     j = 0
-    result = []
+    result: list[int] = []
 
     while i < len(posting_a) and j < len(posting_b):
         doc_a = posting_a[i].doc_id
         doc_b = posting_b[j].doc_id
         if doc_a == doc_b:
-         i += 1
-         j += 1
+            i += 1
+            j += 1
         elif doc_a < doc_b:
-         result.append(doc_a) 
-         i += 1        
+            result.append(doc_a)
+            i += 1
         else:
-         j += 1
+            j += 1
+
     while i < len(posting_a):
-         result.append(posting_a[i].doc_id)
-         i += 1
+        result.append(posting_a[i].doc_id)
+        i += 1
     return result
 
 
-
-def intersect_sets(posting_a, posting_b):
+def intersect_sets(posting_a: list[Posting], posting_b: list[Posting]) -> list[int]:
     set_a = {p.doc_id for p in posting_a}
     set_b = {p.doc_id for p in posting_b}
-    inter = set_a & set_b
-    return sorted(inter)
+    return sorted(set_a & set_b)
 
 
-def search_and(index: InvertedIndex, query: str, engine: str = "merge") -> list[int]:
-
-  if engine not in ("merge", "set"):
-        raise ValueError(f"Unknown engine: {engine}. Allowed: 'merge', 'set'")
-
-  tokens = list(tokenize(query))
-  if not tokens:
-     return []
-  lists_to_merge = []
-
-  for word in tokens:
-     postings_list = index.postings.get(word)
-     if postings_list is None:
+def search_and(
+    index: InvertedIndex, query: str, engine: EngineType = "merge"
+) -> list[int]:
+    tokens = list(tokenize(query))
+    if not tokens:
         return []
-     lists_to_merge.append(postings_list)
+    lists_to_merge: list[list[Posting]] = []
 
-  current_postings = lists_to_merge[0]
-  result_ids = [p.doc_id for p in current_postings]
+    for word in tokens:
+        postings_list = index.postings.get(word)
+        if postings_list is None:
+            return []
+        lists_to_merge.append(postings_list)
 
-  for next_posting in lists_to_merge[1:]:
-      if engine == "merge":
-          result_ids = intersect(current_postings, next_posting)
-      elif engine == "set":
-          result_ids = intersect_sets(current_postings, next_posting)
+    current_postings = lists_to_merge[0]
+    result_ids = [p.doc_id for p in current_postings]
 
-      if not result_ids:
-          return []
-      current_postings = [Posting(doc_id=d_id, tf=0) for d_id in result_ids]
+    for next_posting in lists_to_merge[1:]:
+        if engine == "merge":
+            result_ids = intersect(current_postings, next_posting)
+        else:
+            result_ids = intersect_sets(current_postings, next_posting)
 
-  return  result_ids
+        if not result_ids:
+            return []
+        current_postings = [Posting(doc_id=d_id, tf=0) for d_id in result_ids]
+
+    return result_ids
 
 
-def boolean_search(index: InvertedIndex, query: str, engine: str = "merge") -> list[int]:
-    words = query.split()
-    result_postings = None
-    op = "AND"
-
-    for item in words:
-        if item in ["AND", "OR", "NOT"]:
-            op = item
-            continue
-
-        tokens = list(tokenize(item))
-        if not tokens:
-            continue
-        term = tokens[0]
-        postings = index.postings.get(term, [])
-
-        if result_postings is None:
-            result_postings = postings
-            continue
-
-        if op == "AND":
-            if engine == "set":
-                set_a = [p.doc_id for p in result_postings]
-                set_b = [p.doc_id for p in postings]
-                doc_ids = intersect_sets(
-                    [Posting(doc_id=d, tf=0) for d in set_a], 
-                    [Posting(doc_id=d, tf=0) for d in set_b]
-                )
-            else:
-                doc_ids = intersect(result_postings, postings)
-        elif op == "OR":
-            doc_ids = union(result_postings, postings)
-        elif op == "NOT":
-            doc_ids = difference(result_postings, postings)
-
-        result_postings = [Posting(doc_id=d_id, tf=0) for d_id in doc_ids]
-        op = "AND"
-
-    if result_postings is None:
+def boolean_search(
+    index: InvertedIndex, query: str, engine: EngineType = "merge"
+) -> list[int]:
+    if not query.strip():
         return []
-       
-    return [p.doc_id for p in result_postings]
+    node = _cached_parse(query)
+    return sorted(node.evaluate(index))
 
-def load_index(path: Path):
+
+@timed
+def ranked_search(
+    index: Index,
+    query: str,
+    scorer: Scorer | None = None,
+    k: int = 10,
+) -> list[SearchResult]:
+    active_scorer: Scorer = scorer if scorer is not None else BM25()
+    if not query.strip():
+        return []
+
+    node = _cached_parse(query)
+    matched_docs = node.evaluate(index)
+    if not matched_docs:
+        return []
+
+    query_terms = node.terms()
+    scores: dict[int, float] = {doc_id: 0.0 for doc_id in matched_docs}
+
+    for term in query_terms:
+        for posting in index.postings.get(term, ()):
+            if posting.doc_id in scores:
+                scores[posting.doc_id] += active_scorer.score(index, term, posting)
+
+    top_pairs = heapq.nlargest(k, scores.items(), key=lambda item: item[1])
+    results: list[SearchResult] = []
+    for doc_id, s in top_pairs:
+        meta = index.doc_meta.get(doc_id)
+        title = Path(meta.path).name if meta else f"doc_{doc_id}"
+        snippet = _build_doc_snippet(index, doc_id, query_terms)
+        results.append(
+            SearchResult(score=s, doc_id=doc_id, title=title, snippet=snippet)
+        )
+
+    return results
+
+
+@timed
+def load_index(path: Path) -> Index:
     if path.suffix == ".json":
         return load_index_json(path)
-    else:
-        return load_index_pickle(path)
-
-if __name__ == "__main__":
-    import time
-    import tracemalloc
-
-    parser = argparse.ArgumentParser(description="findex Boolean Search Engine CLI")
-    parser.add_argument("index_path", type=Path, help="Path to the index file (.bin or .json)")
-    parser.add_argument("query", type=str, help="Search query string (e.g. 'physical OR settings')")
-    parser.add_argument(
-        "--engine", 
-        choices=["merge", "set"], 
-        default="merge", 
-        help="Search execution strategy (default: merge)"
-    )
-
-    args = parser.parse_args()
-
-    tracemalloc.start()
-    start_time = time.perf_counter()
-
-    print(f"Завантаження індексу з {args.index_path}...")
-    index = load_index(args.index_path)
-    print(f"Індекс завантажено! Документів у базі: {len(index.doc_meta)}")
-
-    print(f"Шукаємо: '{args.query}' (рушій: {args.engine})")
-    matched_doc_ids = boolean_search(index, args.query, engine=args.engine)
-
-    elapsed_time = time.perf_counter() - start_time
-    current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    print(f"\nЗнайдено збігів: {len(matched_doc_ids)}")
-    for doc_id in matched_doc_ids:
-        meta = index.doc_meta.get(doc_id)
-        if meta:
-            print(f"  [doc_id={doc_id}] -> {meta.path}")
-
-    print(f"\n Час пошуку/завантаження: {elapsed_time:.4f} сек.")
-    print(f" Пік пам'яті:           {peak / 1024 / 1024:.2f} MB")
-
-
-
-
-    
-   
-                   
+    return load_index_pickle(path)
