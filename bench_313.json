@@ -1,0 +1,102 @@
+[
+  {
+    "label": "serial",
+    "executor": "serial",
+    "workers": 1,
+    "wall": 1.3835006000008434,
+    "cpu": 1.390625,
+    "rss": 205.3671875,
+    "merge": 0.04207190003944561,
+    "speedup": 1.0
+  },
+  {
+    "label": "threads",
+    "executor": "threads",
+    "workers": 2,
+    "wall": 1.31840230000671,
+    "cpu": 1.3125,
+    "rss": 205.66796875,
+    "merge": 0.06819689995609224,
+    "speedup": 1.0493766583946358
+  },
+  {
+    "label": "threads",
+    "executor": "threads",
+    "workers": 4,
+    "wall": 1.4235218000249006,
+    "cpu": 1.421875,
+    "rss": 231.23046875,
+    "merge": 0.04518860002281144,
+    "speedup": 0.9718857835381537
+  },
+  {
+    "label": "threads",
+    "executor": "threads",
+    "workers": 8,
+    "wall": 1.3490494000143372,
+    "cpu": 1.328125,
+    "rss": 233.125,
+    "merge": 0.04549549997318536,
+    "speedup": 1.0255373895026676
+  },
+  {
+    "label": "threads",
+    "executor": "threads",
+    "workers": 16,
+    "wall": 1.345015799975954,
+    "cpu": 1.34375,
+    "rss": 236.0703125,
+    "merge": 0.04975979996379465,
+    "speedup": 1.0286128980979832
+  },
+  {
+    "label": "processes",
+    "executor": "processes",
+    "workers": 1,
+    "wall": 2.004207200021483,
+    "cpu": 0.3125,
+    "rss": 236.0703125,
+    "merge": 0.04351310001220554,
+    "speedup": 0.6902981887232087
+  },
+  {
+    "label": "processes",
+    "executor": "processes",
+    "workers": 2,
+    "wall": 2.107992400007788,
+    "cpu": 0.34375,
+    "rss": 236.0703125,
+    "merge": 0.08431269996799529,
+    "speedup": 0.6563119487507317
+  },
+  {
+    "label": "processes",
+    "executor": "processes",
+    "workers": 4,
+    "wall": 1.3477917999844067,
+    "cpu": 0.34375,
+    "rss": 236.0703125,
+    "merge": 0.050792999973054975,
+    "speedup": 1.026494299799754
+  },
+  {
+    "label": "processes",
+    "executor": "processes",
+    "workers": 8,
+    "wall": 1.458577100012917,
+    "cpu": 0.359375,
+    "rss": 236.0703125,
+    "merge": 0.05003860004944727,
+    "speedup": 0.9485275752571402
+  },
+  {
+    "label": "processes",
+    "executor": "processes",
+    "workers": 16,
+    "wall": 1.3517195000313222,
+    "cpu": 0.40625,
+    "rss": 236.0703125,
+    "merge": 0.05678119999356568,
+    "speedup": 1.02351160870934
+  }
+]

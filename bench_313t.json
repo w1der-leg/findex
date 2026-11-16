@@ -1,0 +1,52 @@
+[
+  {
+    "label": "serial (3.13t)",
+    "executor": "serial",
+    "workers": 1,
+    "wall": 1.9807114999857731,
+    "cpu": 1.984375,
+    "rss": 263.203125,
+    "merge": 0.0990923999925144,
+    "speedup": 1.0
+  },
+  {
+    "label": "threads (3.13t no-GIL)",
+    "executor": "threads",
+    "workers": 2,
+    "wall": 1.7541554999770597,
+    "cpu": 1.75,
+    "rss": 518.8984375,
+    "merge": 0.07369990000734106,
+    "speedup": 1.1291538863069301
+  },
+  {
+    "label": "threads (3.13t no-GIL)",
+    "executor": "threads",
+    "workers": 4,
+    "wall": 1.3047003000392579,
+    "cpu": 1.875,
+    "rss": 529.28515625,
+    "merge": 0.07746279996354133,
+    "speedup": 1.5181352375914794
+  },
+  {
+    "label": "threads (3.13t no-GIL)",
+    "executor": "threads",
+    "workers": 8,
+    "wall": 1.3720633000484668,
+    "cpu": 1.78125,
+    "rss": 577.0234375,
+    "merge": 0.07849439996061847,
+    "speedup": 1.4436006705490967
+  },
+  {
+    "label": "threads (3.13t no-GIL)",
+    "executor": "threads",
+    "workers": 16,
+    "wall": 1.434718200005591,
+    "cpu": 2.203125,
+    "rss": 611.9609375,
+    "merge": 0.09919490001630038,
+    "speedup": 1.3805578684218647
+  }
+]

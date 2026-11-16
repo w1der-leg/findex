@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -8,8 +9,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from findex.corpus import iter_documents
-from findex.index import build_index
+from findex.index import ExecutorType, build_index_parallel, collect_corpus_paths
 from findex.query import QuerySyntaxError
 from findex.search import BM25, Scorer, TfIdf, load_index, ranked_search
 from findex.store import save_index_pickle
@@ -52,6 +52,20 @@ def index(
     out: Annotated[
         Path | None, typer.Option("--out", "-o", help="Куди зберегти індекс")
     ] = None,
+    workers: Annotated[
+        int | None,
+        typer.Option(
+            "--workers",
+            "-w",
+            help="Кількість воркерів (за замовчуванням os.cpu_count())",
+        ),
+    ] = None,
+    executor: Annotated[
+        ExecutorType,
+        typer.Option(
+            "--executor", "-e", help="Виконавець: serial, threads або processes"
+        ),
+    ] = "processes",
 ) -> None:
     """Побудувати та зберегти інвертований індекс."""
     if not corpus.exists() or not corpus.is_dir():
@@ -59,18 +73,37 @@ def index(
         raise typer.Exit(code=1)
 
     output_path = out if out is not None else Path("index.bin")
-    log.info("Починаємо індексацію з %s", corpus)
+    actual_workers = (
+        workers if workers is not None and workers > 0 else (os.cpu_count() or 1)
+    )
+    log.info(
+        "Починаємо індексацію з %s (executor=%s, workers=%d)",
+        corpus,
+        executor,
+        actual_workers,
+    )
+
+    doc_paths = collect_corpus_paths(corpus)
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=err_console,
     ) as progress:
-        progress.add_task(description="Індексація документів...", total=None)
-        idx = build_index(iter_documents(corpus), with_positions=True)
+        progress.add_task(
+            description=f"Індексація ({executor}, workers={actual_workers})...",
+            total=None,
+        )
+        idx, merge_sec = build_index_parallel(
+            doc_paths,
+            executor=executor,
+            workers=actual_workers,
+            with_positions=True,
+        )
         save_index_pickle(idx, output_path)
 
     console.print(
-        f"[green]Готово![/green] Проіндексовано документів: {idx.num_docs} -> {output_path}"
+        f"[green]Готово![/green] Проіндексовано документів: {idx.num_docs} "
+        f"({executor}, workers={actual_workers}, merge={merge_sec:.3f}s) -> {output_path}"
     )
 
 
@@ -159,3 +192,7 @@ def stats(
     table.add_row("Унікальних термів", str(len(idx)))
     table.add_row("Середня довжина документа", f"{idx.avg_doc_length:.1f}")
     console.print(table)
+
+
+if __name__ == "__main__":
+    app()
