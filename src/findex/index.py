@@ -1,4 +1,5 @@
 import functools
+import json
 import logging
 import os
 import time
@@ -85,11 +86,38 @@ InvertedIndex = Index
 
 
 def collect_corpus_paths(corpus_dir: Path) -> list[Path]:
+    if corpus_dir.is_file():
+        return [corpus_dir]
     return sorted(
         p
         for p in corpus_dir.rglob("*")
-        if p.is_file() and p.suffix.lower() in {".txt", ".md"}
+        if p.is_file() and p.suffix.lower() in {".txt", ".md", ".jsonl"}
     )
+
+
+def _index_single_doc(
+    doc_id: int,
+    doc_path: str,
+    text: str,
+    *,
+    with_positions: bool,
+    doc_lengths: dict[int, int],
+    doc_meta: dict[int, DocMeta],
+    postings: defaultdict[str, list[Posting]],
+) -> None:
+    tokens = list(tokenize(text))
+    doc_meta[doc_id] = DocMeta(doc_id=doc_id, path=doc_path)
+    doc_lengths[doc_id] = len(tokens)
+
+    term_positions: defaultdict[str, list[int]] = defaultdict(list)
+    for pos, term in enumerate(tokens):
+        term_positions[term].append(pos)
+
+    for term, pos_list in term_positions.items():
+        positions_tuple = tuple(pos_list) if with_positions else ()
+        postings[term].append(
+            Posting(doc_id=doc_id, tf=len(pos_list), positions=positions_tuple)
+        )
 
 
 def build_partial(
@@ -98,28 +126,45 @@ def build_partial(
     *,
     with_positions: bool = True,
 ) -> PartialIndex:
-    """Рівень модуля (picklable): читає чанк шляхів і будує локальний індекс із діапазону doc_id."""
+    """Рівень модуля (picklable): читає чанк шляхів (.txt/.md/.jsonl) і будує локальний індекс."""
     doc_lengths: dict[int, int] = {}
     doc_meta: dict[int, DocMeta] = {}
     postings: defaultdict[str, list[Posting]] = defaultdict(list)
 
-    for offset, path in enumerate(doc_paths):
-        doc_id = start_doc_id + offset
-        text = path.read_text(encoding="utf-8", errors="replace")
-        tokens = list(tokenize(text))
-
-        doc_meta[doc_id] = DocMeta(doc_id=doc_id, path=str(path))
-        doc_lengths[doc_id] = len(tokens)
-
-        term_positions: defaultdict[str, list[int]] = defaultdict(list)
-        for pos, term in enumerate(tokens):
-            term_positions[term].append(pos)
-
-        for term, pos_list in term_positions.items():
-            positions_tuple = tuple(pos_list) if with_positions else ()
-            postings[term].append(
-                Posting(doc_id=doc_id, tf=len(pos_list), positions=positions_tuple)
+    next_id = start_doc_id
+    for path in doc_paths:
+        if path.suffix.lower() == ".jsonl":
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                for line_no, line in enumerate(f, start=1):
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    rec = json.loads(stripped)
+                    title = str(rec.get("title", ""))
+                    body = str(rec.get("text", ""))
+                    url = str(rec.get("url", f"{path}:{line_no}"))
+                    _index_single_doc(
+                        next_id,
+                        url,
+                        f"{title}\n{body}".strip(),
+                        with_positions=with_positions,
+                        doc_lengths=doc_lengths,
+                        doc_meta=doc_meta,
+                        postings=postings,
+                    )
+                    next_id += 1
+        else:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            _index_single_doc(
+                next_id,
+                str(path),
+                text,
+                with_positions=with_positions,
+                doc_lengths=doc_lengths,
+                doc_meta=doc_meta,
+                postings=postings,
             )
+            next_id += 1
 
     return PartialIndex(
         postings=dict(postings),
@@ -155,6 +200,17 @@ def merge(partials: Iterable[PartialIndex]) -> Index:
     )
 
 
+def _count_docs_in_path(path: Path) -> int:
+    if path.suffix.lower() != ".jsonl":
+        return 1
+    count = 0
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
 def _chunk_paths(
     paths: list[Path], num_chunks: int, with_positions: bool
 ) -> list[tuple[list[Path], int, bool]]:
@@ -163,9 +219,11 @@ def _chunk_paths(
     n = max(1, min(num_chunks, len(paths)))
     chunk_size = (len(paths) + n - 1) // n
     tasks: list[tuple[list[Path], int, bool]] = []
+    current_doc_id = 0
     for i in range(0, len(paths), chunk_size):
         chunk = paths[i : i + chunk_size]
-        tasks.append((chunk, i, with_positions))
+        tasks.append((chunk, current_doc_id, with_positions))
+        current_doc_id += sum(_count_docs_in_path(p) for p in chunk)
     return tasks
 
 
@@ -222,19 +280,15 @@ def build_index(documents: Iterable[Document], *, with_positions: bool = True) -
     postings: defaultdict[str, list[Posting]] = defaultdict(list)
 
     for doc in documents:
-        tokens = list(tokenize(doc.text))
-        doc_meta[doc.doc_id] = DocMeta(doc_id=doc.doc_id, path=str(doc.path))
-        doc_lengths[doc.doc_id] = len(tokens)
-
-        term_positions: defaultdict[str, list[int]] = defaultdict(list)
-        for pos, term in enumerate(tokens):
-            term_positions[term].append(pos)
-
-        for term, pos_list in term_positions.items():
-            positions_tuple = tuple(pos_list) if with_positions else ()
-            postings[term].append(
-                Posting(doc_id=doc.doc_id, tf=len(pos_list), positions=positions_tuple)
-            )
+        _index_single_doc(
+            doc.doc_id,
+            str(doc.path),
+            doc.text,
+            with_positions=with_positions,
+            doc_lengths=doc_lengths,
+            doc_meta=doc_meta,
+            postings=postings,
+        )
 
     log.info("Built index with %d documents and %d terms", len(doc_meta), len(postings))
     return Index(
