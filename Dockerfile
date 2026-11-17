@@ -7,12 +7,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+RUN uv sync --frozen --no-install-project --no-dev
 
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev
 
 # Stage 2: Runtime (slim, non-root)
 FROM python:3.13-slim-bookworm AS runtime
@@ -24,7 +22,7 @@ WORKDIR /app
 
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=builder --chown=appuser:appuser /app/src /app/src
-COPY --chown=appuser:appuser crawl_index.bin /app/data/crawl_index.bin
+COPY --chown=appuser:appuser data /app/data
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -32,6 +30,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PORT="8000"
 
 USER appuser
+
+# Якщо crawl_index.bin не передано в data/, збираємо індекс із корпусу data/ під час build
+RUN if [ ! -f /app/data/crawl_index.bin ]; then \
+      findex index /app/data --out /app/data/crawl_index.bin --executor serial; \
+    fi
 
 EXPOSE 8000
 
