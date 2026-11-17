@@ -22,7 +22,8 @@ WORKDIR /app
 
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --from=builder --chown=appuser:appuser /app/src /app/src
-COPY --chown=appuser:appuser data /app/data
+
+RUN mkdir -p /app/data && chown -R appuser:appuser /app/data
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
@@ -31,10 +32,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 USER appuser
 
-# Якщо crawl_index.bin не передано в data/, збираємо індекс із корпусу data/ під час build
-RUN if [ ! -f /app/data/crawl_index.bin ]; then \
-      findex index /app/data --out /app/data/crawl_index.bin --executor serial; \
-    fi
+# Генеруємо корпус і будуємо індекс прямо під час збірки образу
+RUN printf "Python asyncio FastAPI web search engine with BM25 and TF-IDF ranking.\n" > /app/data/doc1.txt && \
+    printf "Mystery detective novel classic story about books and investigations.\n" > /app/data/doc2.txt && \
+    printf "Docker containers deployment healthcheck and performance benchmarks p50 p95 p99.\n" > /app/data/doc3.txt && \
+    findex index /app/data --out /app/data/crawl_index.bin --executor serial
 
 EXPOSE 8000
 
