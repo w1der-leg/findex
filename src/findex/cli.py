@@ -283,5 +283,33 @@ def stats(
     console.print(table)
 
 
+@app.command()
+def serve(
+    host: Annotated[
+        str, typer.Option("--host", help="Адреса прослуховування")
+    ] = "0.0.0.0",
+    port: Annotated[int, typer.Option("--port", "-p", help="Порт HTTP-сервера")] = 8000,
+    workers: Annotated[
+        int, typer.Option("--workers", "-w", help="Кількість воркерів Uvicorn")
+    ] = 1,
+    index_path: Annotated[
+        Path | None,
+        typer.Option("--index", "-i", help="Шлях до індексу (перекриває INDEX_PATH)"),
+    ] = None,
+) -> None:
+    """Запустити веб-сервер FastAPI (API та веб-інтерфейс)."""
+    import uvicorn
+
+    if index_path is not None:
+        os.environ["INDEX_PATH"] = str(index_path)
+
+    uvicorn.run(
+        "findex.web:app",
+        host=host,
+        port=port,
+        workers=workers,
+    )
+
+
 if __name__ == "__main__":
     app()

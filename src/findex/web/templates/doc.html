@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }} — findex</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1><a href="/">← Назад до пошуку</a></h1>
+        <span class="meta-badge">Doc ID #{{ doc_id }}</span>
+      </header>
+
+      <article class="result-card">
+        <h2>{{ title }}</h2>
+        <div class="result-url"><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></div>
+        <p class="summary">Довжина документа: <strong>{{ length }}</strong> токенів</p>
+
+        <h3>Найчастіші терми в індексі документа</h3>
+        <div class="term-grid">
+          {% for term, tf in top_terms %}
+          <span class="term-chip">{{ term }} <strong>({{ tf }})</strong></span>
+          {% endfor %}
+        </div>
+      </article>
+    </div>
+  </body>
+</html>

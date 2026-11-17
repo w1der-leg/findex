@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>findex — Пошук по корпусу</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1><a href="/">findex</a></h1>
+        <span class="meta-badge">
+          Документів: {{ num_docs }} · Термів: {{ num_terms }} · <a href="/docs">OpenAPI</a>
+        </span>
+      </header>
+
+      <form class="search-form" method="get" action="/">
+        <input
+          type="text"
+          name="q"
+          value="{{ q }}"
+          placeholder="Введіть запит (напр. python OR mystery, &quot;exact phrase&quot;)..."
+          autofocus
+        />
+        <select name="scorer">
+          <option value="bm25" {% if scorer == "bm25" %}selected{% endif %}>BM25</option>
+          <option value="tfidf" {% if scorer == "tfidf" %}selected{% endif %}>TF-IDF</option>
+        </select>
+        <button type="submit">Пошук</button>
+      </form>
+
+      {% if error_msg %}
+      <div class="error-box">{{ error_msg }}</div>
+      {% elif search_data %}
+      <div class="summary">
+        Знайдено <strong>{{ search_data.total }}</strong> результатів за
+        <strong>{{ search_data.took_ms }} мс</strong> (сторінка {{ search_data.page }} із
+        {{ search_data.total_pages }})
+      </div>
+
+      {% if items %}
+        {% for item in items %}
+        <article class="result-card">
+          <div class="result-header">
+            <a class="result-title" href="/doc/{{ item.doc_id }}">{{ item.title }}</a>
+            <span class="score-pill">{{ scorer.upper() }}: {{ item.score }}</span>
+          </div>
+          <div class="result-url">{{ item.url }}</div>
+          <p class="result-snippet">{{ item.snippet_html }}</p>
+        </article>
+        {% endfor %}
+
+        <nav class="pagination">
+          {% if search_data.page > 1 %}
+          <a href="/?q={{ q | urlencode }}&scorer={{ scorer }}&k={{ k }}&page={{ search_data.page - 1 }}">
+            ← Попередня
+          </a>
+          {% endif %}
+          <span>Сторінка {{ search_data.page }} / {{ search_data.total_pages }}</span>
+          {% if search_data.page < search_data.total_pages %}
+          <a href="/?q={{ q | urlencode }}&scorer={{ scorer }}&k={{ k }}&page={{ search_data.page + 1 }}">
+            Наступна →
+          </a>
+          {% endif %}
+        </nav>
+      {% else %}
+        <p>За запитом <strong>{{ q }}</strong> нічого не знайдено.</p>
+      {% endif %}
+      {% endif %}
+    </div>
+  </body>
+</html>
