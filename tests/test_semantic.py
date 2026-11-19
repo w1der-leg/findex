@@ -89,6 +89,8 @@ def test_hybrid_rrf_combines_keyword_and_semantic() -> None:
     assert hits[0].doc_id in {1, 2}
 
     kw_hits = hybrid_search(idx, sem, "python", mode="keyword", k=3)
-    sem_hits = hybrid_search(idx, sem, "python", mode="semantic", k=3, query_vector=q_vec)
+    sem_hits = hybrid_search(
+        idx, sem, "python", mode="semantic", k=3, query_vector=q_vec
+    )
     fused = rrf_fuse(kw_hits, sem_hits, k=3)
     assert fused[0].score == pytest.approx(1.0 / 61 + 1.0 / 62)

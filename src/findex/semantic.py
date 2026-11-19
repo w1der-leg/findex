@@ -218,9 +218,7 @@ def hybrid_search(
         return ranked_search(index, query, scorer=scorer or BM25(), k=k)
 
     if mode == "semantic":
-        return semantic_search(
-            index, sem_idx, query, k=k, query_vector=query_vector
-        )
+        return semantic_search(index, sem_idx, query, k=k, query_vector=query_vector)
 
     pool_k = max(k * 3, 30)
     kw_res = ranked_search(index, query, scorer=scorer or BM25(), k=pool_k)

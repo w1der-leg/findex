@@ -356,7 +356,9 @@ def search(
         raise typer.Exit(code=1)
 
     idx = load_index(index_path)
-    sem_idx = load_semantic_index(index_path) if mode in ("semantic", "hybrid") else None
+    sem_idx = (
+        load_semantic_index(index_path) if mode in ("semantic", "hybrid") else None
+    )
 
     if mode in ("semantic", "hybrid") and sem_idx is None:
         err_console.print(

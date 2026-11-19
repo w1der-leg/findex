@@ -96,7 +96,9 @@ class Index(Mapping[str, list[Posting]]):
     def numpy_postings(self) -> dict[str, TermArrays]:
         result: dict[str, TermArrays] = {}
         for term, plist in self.postings.items():
-            doc_ids = np.fromiter((p.doc_id for p in plist), dtype=np.int32, count=len(plist))
+            doc_ids = np.fromiter(
+                (p.doc_id for p in plist), dtype=np.int32, count=len(plist)
+            )
             tfs = np.fromiter((p.tf for p in plist), dtype=np.int32, count=len(plist))
             result[term] = TermArrays(doc_ids=doc_ids, tfs=tfs)
         return result
