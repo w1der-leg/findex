@@ -20,10 +20,15 @@
           type="text"
           name="q"
           value="{{ q }}"
-          placeholder="Введіть запит (напр. python OR mystery, &quot;exact phrase&quot;)..."
+          placeholder="Введіть запит (напр. python OR mystery, &quot;exact phrase&quot;, how to speed up code)..."
           autofocus
         />
-        <select name="scorer">
+        <select name="mode" title="Режим пошуку">
+          <option value="keyword" {% if mode == "keyword" %}selected{% endif %}>Keyword</option>
+          <option value="semantic" {% if mode == "semantic" %}selected{% endif %}>Semantic</option>
+          <option value="hybrid" {% if mode == "hybrid" %}selected{% endif %}>Hybrid (RRF)</option>
+        </select>
+        <select name="scorer" title="Лексичний скорер">
           <option value="bm25" {% if scorer == "bm25" %}selected{% endif %}>BM25</option>
           <option value="tfidf" {% if scorer == "tfidf" %}selected{% endif %}>TF-IDF</option>
         </select>
@@ -35,8 +40,8 @@
       {% elif search_data %}
       <div class="summary">
         Знайдено <strong>{{ search_data.total }}</strong> результатів за
-        <strong>{{ search_data.took_ms }} мс</strong> (сторінка {{ search_data.page }} із
-        {{ search_data.total_pages }})
+        <strong>{{ search_data.took_ms }} мс</strong> · режим: <strong>{{ search_data.mode }}</strong>
+        (сторінка {{ search_data.page }} із {{ search_data.total_pages }})
       </div>
 
       {% if items %}
@@ -44,7 +49,7 @@
         <article class="result-card">
           <div class="result-header">
             <a class="result-title" href="/doc/{{ item.doc_id }}">{{ item.title }}</a>
-            <span class="score-pill">{{ scorer.upper() }}: {{ item.score }}</span>
+            <span class="score-pill">{{ search_data.mode.upper() }} / {{ scorer.upper() }}: {{ item.score }}</span>
           </div>
           <div class="result-url">{{ item.url }}</div>
           <p class="result-snippet">{{ item.snippet_html }}</p>
@@ -53,13 +58,13 @@
 
         <nav class="pagination">
           {% if search_data.page > 1 %}
-          <a href="/?q={{ q | urlencode }}&scorer={{ scorer }}&k={{ k }}&page={{ search_data.page - 1 }}">
+          <a href="/?q={{ q | urlencode }}&mode={{ mode }}&scorer={{ scorer }}&k={{ k }}&page={{ search_data.page - 1 }}">
             ← Попередня
           </a>
           {% endif %}
           <span>Сторінка {{ search_data.page }} / {{ search_data.total_pages }}</span>
           {% if search_data.page < search_data.total_pages %}
-          <a href="/?q={{ q | urlencode }}&scorer={{ scorer }}&k={{ k }}&page={{ search_data.page + 1 }}">
+          <a href="/?q={{ q | urlencode }}&mode={{ mode }}&scorer={{ scorer }}&k={{ k }}&page={{ search_data.page + 1 }}">
             Наступна →
           </a>
           {% endif %}

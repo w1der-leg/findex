@@ -9,3 +9,19 @@ wheels/
 # Virtual environments
 .venv
 data/
+
+data/
+bench_index.bin
+*.embeddings.npy
+*.chunk_docs.npy
+*.semantic.meta.txt
+data/
+bench_index.bin
+bench_313.json
+*.embeddings.npy
+*.chunk_docs.npy
+*.semantic.meta.txt
+
+
+.pytest_cache/
+

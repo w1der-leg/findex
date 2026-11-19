@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
+from numpy.typing import NDArray
+
 from findex.corpus import Document, iter_documents
 from findex.tokenize import tokenize
 
@@ -24,6 +27,12 @@ class Posting:
     doc_id: int
     tf: int
     positions: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TermArrays:
+    doc_ids: NDArray[np.int32]
+    tfs: NDArray[np.int32]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +75,37 @@ class Index(Mapping[str, list[Posting]]):
         return len(self.doc_meta)
 
     @functools.cached_property
+    def max_doc_id(self) -> int:
+        if not self.doc_meta and not self.doc_lengths:
+            return -1
+        ids = list(self.doc_meta.keys()) + list(self.doc_lengths.keys())
+        return max(ids)
+
+    @functools.cached_property
+    def doc_len_array(self) -> NDArray[np.int32]:
+        size = self.max_doc_id + 1
+        if size <= 0:
+            return np.zeros(0, dtype=np.int32)
+        arr = np.zeros(size, dtype=np.int32)
+        for doc_id, length in self.doc_lengths.items():
+            if 0 <= doc_id < size:
+                arr[doc_id] = length
+        return arr
+
+    @functools.cached_property
+    def numpy_postings(self) -> dict[str, TermArrays]:
+        result: dict[str, TermArrays] = {}
+        for term, plist in self.postings.items():
+            doc_ids = np.fromiter((p.doc_id for p in plist), dtype=np.int32, count=len(plist))
+            tfs = np.fromiter((p.tf for p in plist), dtype=np.int32, count=len(plist))
+            result[term] = TermArrays(doc_ids=doc_ids, tfs=tfs)
+        return result
+
+    @functools.cached_property
     def avg_doc_length(self) -> float:
         if not self.doc_lengths:
             return 0.0
-        return sum(self.doc_lengths.values()) / len(self.doc_lengths)
+        return float(np.mean(list(self.doc_lengths.values())))
 
     def doc_length(self, doc_id: int) -> int:
         return self.doc_lengths.get(doc_id, 0)
@@ -126,7 +162,6 @@ def build_partial(
     *,
     with_positions: bool = True,
 ) -> PartialIndex:
-    """Рівень модуля (picklable): читає чанк шляхів (.txt/.md/.jsonl) і будує локальний індекс."""
     doc_lengths: dict[int, int] = {}
     doc_meta: dict[int, DocMeta] = {}
     postings: defaultdict[str, list[Posting]] = defaultdict(list)
@@ -179,7 +214,6 @@ def _build_partial_task(task: tuple[list[Path], int, bool]) -> PartialIndex:
 
 
 def merge(partials: Iterable[PartialIndex]) -> Index:
-    """Послідовно об'єднує часткові індекси у фінальний Index зі збереженням порядку doc_id."""
     merged_doc_lengths: dict[int, int] = {}
     merged_doc_meta: dict[int, DocMeta] = {}
     merged_postings: defaultdict[str, list[Posting]] = defaultdict(list)
@@ -234,7 +268,6 @@ def build_index_parallel(
     workers: int | None = None,
     with_positions: bool = True,
 ) -> tuple[Index, float]:
-    """Будує індекс обраним виконавцем і повертає (Index, merge_time_sec)."""
     if not doc_paths:
         return Index(postings={}, doc_lengths={}, doc_meta={}), 0.0
 

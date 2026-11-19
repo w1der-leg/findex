@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
+import numpy as np
+from numpy.typing import NDArray
+
 from findex.index import Index, InvertedIndex, Posting
 from findex.query import QueryNode, parse_query
 from findex.store import load_index_json, load_index_pickle
@@ -45,6 +48,15 @@ class Scorer(Protocol):
     def score(self, index: Index, term: str, posting: Posting) -> float: ...
 
 
+class VectorizedScorer(Protocol):
+    def score_term_vectorized(
+        self,
+        index: Index,
+        term: str,
+        scores: NDArray[np.float64],
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TfIdf:
     def score(self, index: Index, term: str, posting: Posting) -> float:
@@ -53,6 +65,20 @@ class TfIdf:
             return 0.0
         idf = math.log((index.num_docs + 1) / (df + 1)) + 1.0
         return float(posting.tf) * idf
+
+    def score_term_vectorized(
+        self,
+        index: Index,
+        term: str,
+        scores: NDArray[np.float64],
+    ) -> None:
+        term_arr = index.numpy_postings.get(term)
+        n = index.num_docs
+        if term_arr is None or n == 0 or term_arr.doc_ids.size == 0:
+            return
+        df = int(term_arr.doc_ids.size)
+        idf = math.log((n + 1) / (df + 1)) + 1.0
+        scores[term_arr.doc_ids] += term_arr.tfs.astype(np.float64) * idf
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +96,24 @@ class BM25:
         avg_dl = index.avg_doc_length or 1.0
         denom = posting.tf + self.k1 * (1.0 - self.b + self.b * (doc_len / avg_dl))
         return idf * (posting.tf * (self.k1 + 1.0)) / denom
+
+    def score_term_vectorized(
+        self,
+        index: Index,
+        term: str,
+        scores: NDArray[np.float64],
+    ) -> None:
+        term_arr = index.numpy_postings.get(term)
+        n = index.num_docs
+        if term_arr is None or n == 0 or term_arr.doc_ids.size == 0:
+            return
+        df = int(term_arr.doc_ids.size)
+        idf = math.log((n - df + 0.5) / (df + 0.5) + 1.0)
+        avg_dl = index.avg_doc_length or 1.0
+        tfs = term_arr.tfs.astype(np.float64)
+        doc_lens = index.doc_len_array[term_arr.doc_ids].astype(np.float64)
+        denom = tfs + self.k1 * (1.0 - self.b + self.b * (doc_lens / avg_dl))
+        scores[term_arr.doc_ids] += idf * (tfs * (self.k1 + 1.0)) / denom
 
 
 @functools.lru_cache(maxsize=256)
@@ -106,7 +150,7 @@ def extract_snippet(text: str, terms: set[str], window: int = 80) -> str:
     return f"{prefix}{snippet}{suffix}"
 
 
-def _build_doc_snippet(index: Index, doc_id: int, terms: set[str]) -> str:
+def build_doc_snippet(index: Index, doc_id: int, terms: set[str]) -> str:
     meta = index.doc_meta.get(doc_id)
     if meta is None:
         return ""
@@ -239,13 +283,13 @@ def boolean_search(
     return sorted(node.evaluate(index))
 
 
-@timed
-def ranked_search(
+def ranked_search_python(
     index: Index,
     query: str,
     scorer: Scorer | None = None,
     k: int = 10,
 ) -> list[SearchResult]:
+    """Базовий скалярний скорер із Lab 03 (залишений для порівняльних тестів та бенчмарків)."""
     active_scorer: Scorer = scorer if scorer is not None else BM25()
     if not query.strip():
         return []
@@ -268,7 +312,73 @@ def ranked_search(
     for doc_id, s in top_pairs:
         meta = index.doc_meta.get(doc_id)
         title = Path(meta.path).name if meta else f"doc_{doc_id}"
-        snippet = _build_doc_snippet(index, doc_id, query_terms)
+        snippet = build_doc_snippet(index, doc_id, query_terms)
+        results.append(
+            SearchResult(score=s, doc_id=doc_id, title=title, snippet=snippet)
+        )
+
+    return results
+
+
+@timed
+def ranked_search(
+    index: Index,
+    query: str,
+    scorer: Scorer | None = None,
+    k: int = 10,
+) -> list[SearchResult]:
+    active_scorer: Scorer = scorer if scorer is not None else BM25()
+    if not query.strip() or k <= 0:
+        return []
+
+    node = _cached_parse(query)
+    matched_docs = node.evaluate(index)
+    if not matched_docs:
+        return []
+
+    query_terms = node.terms()
+    size = index.max_doc_id + 1
+    if size <= 0:
+        return []
+
+    if hasattr(active_scorer, "score_term_vectorized"):
+        all_scores = np.zeros(size, dtype=np.float64)
+        vec_scorer: VectorizedScorer = active_scorer  # type: ignore[assignment]
+        for term in query_terms:
+            vec_scorer.score_term_vectorized(index, term, all_scores)
+
+        matched_arr = np.array(sorted(matched_docs), dtype=np.int32)
+        matched_scores = all_scores[matched_arr]
+
+        top_n = min(k, matched_arr.size)
+        if top_n < matched_arr.size:
+            part_idx = np.argpartition(-matched_scores, top_n - 1)
+            kth_score = float(matched_scores[part_idx[top_n - 1]])
+            cand_mask = matched_scores >= kth_score
+            cand_docs = matched_arr[cand_mask]
+            cand_scores = matched_scores[cand_mask]
+        else:
+            cand_docs = matched_arr
+            cand_scores = matched_scores
+
+        order = sorted(
+            range(cand_docs.size),
+            key=lambda i: (-float(cand_scores[i]), int(cand_docs[i])),
+        )[:top_n]
+        top_pairs = [(int(cand_docs[i]), float(cand_scores[i])) for i in order]
+    else:
+        scores: dict[int, float] = {doc_id: 0.0 for doc_id in matched_docs}
+        for term in query_terms:
+            for posting in index.postings.get(term, ()):
+                if posting.doc_id in scores:
+                    scores[posting.doc_id] += active_scorer.score(index, term, posting)
+        top_pairs = heapq.nlargest(k, scores.items(), key=lambda item: item[1])
+
+    results: list[SearchResult] = []
+    for doc_id, s in top_pairs:
+        meta = index.doc_meta.get(doc_id)
+        title = Path(meta.path).name if meta else f"doc_{doc_id}"
+        snippet = build_doc_snippet(index, doc_id, query_terms)
         results.append(
             SearchResult(score=s, doc_id=doc_id, title=title, snippet=snippet)
         )

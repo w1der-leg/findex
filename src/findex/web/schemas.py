@@ -14,6 +14,7 @@ class ApiSearchResult(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     scorer: Literal["bm25", "tfidf"]
+    mode: Literal["keyword", "semantic", "hybrid"] = "keyword"
     page: int
     page_size: int
     total: int
@@ -35,10 +36,12 @@ class StatsResponse(BaseModel):
     num_docs: int
     num_terms: int
     avg_doc_length: float
+    semantic_chunks: int = 0
     uptime_sec: float
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "unavailable"]
     index_loaded: bool
+    semantic_loaded: bool = False
     num_docs: int = Field(ge=0)

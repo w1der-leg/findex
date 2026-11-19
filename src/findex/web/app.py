@@ -16,6 +16,12 @@ from markupsafe import Markup, escape
 from findex.index import Index
 from findex.query import QuerySyntaxError
 from findex.search import BM25, Scorer, TfIdf, load_index, ranked_search
+from findex.semantic import (
+    SearchMode,
+    SemanticIndex,
+    hybrid_search,
+    load_semantic_index,
+)
 from findex.tokenize import tokenize
 from findex.web.config import Settings
 from findex.web.schemas import (
@@ -83,11 +89,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.settings = settings
     app.state.started_at = time.perf_counter()
     app.state.index = None
+    app.state.semantic_index = None
 
     if settings.index_path.exists():
         log.info("Loading search index from %s", settings.index_path)
-        app.state.index = load_index(settings.index_path)
-        log.info("Loaded index: %r", app.state.index)
+        idx = load_index(settings.index_path)
+        _ = idx.numpy_postings
+        _ = idx.doc_len_array
+        app.state.index = idx
+        app.state.semantic_index = load_semantic_index(settings.index_path)
+        log.info(
+            "Loaded index: %r (semantic=%s)",
+            app.state.index,
+            app.state.semantic_index is not None,
+        )
     else:
         log.warning(
             "Index path %s does not exist; /health will return 503", settings.index_path
@@ -96,17 +111,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     try:
         yield
     finally:
-        idx: Index | None = getattr(app.state, "index", None)
-        if idx is not None:
-            idx.close()
+        idx_close: Index | None = getattr(app.state, "index", None)
+        if idx_close is not None:
+            idx_close.close()
             log.info("Closed search index on shutdown")
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="findex Search Engine",
-        version="0.7.0",
-        description="Повнотекстовий пошуковий рушій на FastAPI (BM25 / TF-IDF)",
+        version="1.0.0",
+        description="Повнотекстовий та гібридний пошуковий рушій на FastAPI (BM25 / TF-IDF / Semantic RRF)",
         lifespan=lifespan,
     )
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
@@ -138,12 +153,23 @@ def create_app() -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     def health(request: Request) -> JSONResponse:
         idx: Index | None = getattr(request.app.state, "index", None)
+        sem_idx: SemanticIndex | None = getattr(
+            request.app.state, "semantic_index", None
+        )
         if idx is None:
             payload = HealthResponse(
-                status="unavailable", index_loaded=False, num_docs=0
+                status="unavailable",
+                index_loaded=False,
+                semantic_loaded=False,
+                num_docs=0,
             )
             return JSONResponse(status_code=503, content=payload.model_dump())
-        payload = HealthResponse(status="ok", index_loaded=True, num_docs=idx.num_docs)
+        payload = HealthResponse(
+            status="ok",
+            index_loaded=True,
+            semantic_loaded=sem_idx is not None,
+            num_docs=idx.num_docs,
+        )
         return JSONResponse(status_code=200, content=payload.model_dump())
 
     @app.get("/stats", response_model=StatsResponse)
@@ -155,27 +181,45 @@ def create_app() -> FastAPI:
         started_at: float = getattr(
             request.app.state, "started_at", time.perf_counter()
         )
+        sem_idx: SemanticIndex | None = getattr(
+            request.app.state, "semantic_index", None
+        )
         return StatsResponse(
             index_path=str(settings.index_path),
             num_docs=idx.num_docs,
             num_terms=len(idx),
             avg_doc_length=round(idx.avg_doc_length, 2),
+            semantic_chunks=sem_idx.num_chunks if sem_idx is not None else 0,
             uptime_sec=round(time.perf_counter() - started_at, 2),
         )
 
     def _execute_search(
         idx: Index,
+        sem_idx: SemanticIndex | None,
         q: str,
         k: int,
         scorer: Literal["bm25", "tfidf"],
+        mode: SearchMode,
         page: int,
     ) -> SearchResponse:
         t0 = time.perf_counter()
         active_scorer: Scorer = BM25() if scorer == "bm25" else TfIdf()
+        effective_mode: SearchMode = (
+            mode if (mode == "keyword" or sem_idx is not None) else "keyword"
+        )
         try:
-            all_hits = ranked_search(
-                idx, q, scorer=active_scorer, k=max(idx.num_docs, k * page)
-            )
+            top_limit = max(idx.num_docs, k * page)
+            if effective_mode == "keyword":
+                all_hits = ranked_search(idx, q, scorer=active_scorer, k=top_limit)
+            else:
+                all_hits = hybrid_search(
+                    idx,
+                    sem_idx,
+                    q,
+                    mode=effective_mode,
+                    scorer=active_scorer,
+                    k=top_limit,
+                )
         except QuerySyntaxError as exc:
             raise HTTPException(
                 status_code=422, detail=f"Invalid query syntax: {exc}"
@@ -205,6 +249,7 @@ def create_app() -> FastAPI:
         return SearchResponse(
             query=q,
             scorer=scorer,
+            mode=effective_mode,
             page=page,
             page_size=k,
             total=total,
@@ -215,21 +260,28 @@ def create_app() -> FastAPI:
 
     @app.get("/search", response_model=SearchResponse)
     def search_api(
+        request: Request,
         q: Annotated[
             str, Query(min_length=1, max_length=200, description="Пошуковий запит")
         ],
         k: Annotated[
-            int, Query(ge=1, le=100, description="Результатів на сторінку")
+            int, Query(ge=1, le=100, description="Результатів на сторінці")
         ] = 10,
         scorer: Annotated[
             Literal["bm25", "tfidf"], Query(description="Алгоритм ранжування")
         ] = "bm25",
+        mode: Annotated[
+            SearchMode, Query(description="Режим пошуку: keyword, semantic або hybrid")
+        ] = "keyword",
         page: Annotated[int, Query(ge=1, le=1000, description="Номер сторінки")] = 1,
         idx: Annotated[Index, Depends(get_index)] = None,  # type: ignore[assignment]
     ) -> SearchResponse:
         if not q.strip():
             raise HTTPException(status_code=422, detail="Query must not be blank")
-        return _execute_search(idx, q, k, scorer, page)
+        sem_idx: SemanticIndex | None = getattr(
+            request.app.state, "semantic_index", None
+        )
+        return _execute_search(idx, sem_idx, q, k, scorer, mode, page)
 
     @app.get("/docs/{doc_id}", response_model=DocumentResponse)
     def get_document_api(
@@ -254,6 +306,7 @@ def create_app() -> FastAPI:
         q: Annotated[str, Query(max_length=200)] = "",
         k: Annotated[int, Query(ge=1, le=50)] = 10,
         scorer: Annotated[Literal["bm25", "tfidf"], Query()] = "bm25",
+        mode: Annotated[SearchMode, Query()] = "keyword",
         page: Annotated[int, Query(ge=1, le=1000)] = 1,
     ) -> HTMLResponse:
         override_fn = app.dependency_overrides.get(get_index)
@@ -261,6 +314,9 @@ def create_app() -> FastAPI:
             override_fn()
             if callable(override_fn)
             else getattr(request.app.state, "index", None)
+        )
+        sem_idx: SemanticIndex | None = getattr(
+            request.app.state, "semantic_index", None
         )
         search_data: SearchResponse | None = None
         highlighted_items: list[dict[str, object]] = []
@@ -270,7 +326,7 @@ def create_app() -> FastAPI:
             error_msg = "Пошуковий індекс ще не завантажений (перевірте INDEX_PATH)."
         elif q.strip():
             try:
-                search_data = _execute_search(idx, q, k, scorer, page)
+                search_data = _execute_search(idx, sem_idx, q, k, scorer, mode, page)
                 for item in search_data.results:
                     highlighted_items.append(
                         {
@@ -291,6 +347,8 @@ def create_app() -> FastAPI:
                 "q": q,
                 "k": k,
                 "scorer": scorer,
+                "mode": mode,
+                "semantic_available": sem_idx is not None,
                 "page": page,
                 "search_data": search_data,
                 "items": highlighted_items,
